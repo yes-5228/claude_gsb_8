@@ -97,3 +97,80 @@ OPEN_ISSUE_STATUSES: list[str] = [
 
 # 单检查项低于该分数视为不合格项
 INSPECTION_ITEM_PROBLEM_THRESHOLD = 6
+
+
+class ComplaintSource(StrEnum):
+    """群众反映与热线转办的登记来源。"""
+
+    HOTLINE = "热线电话"
+    TRANSFER_12345 = "12345转办"
+    ON_SITE = "现场反映"
+    NETWORK = "网络平台"
+    OTHER = "其他渠道"
+
+
+class ComplaintCategory(StrEnum):
+    CLEANING = "保洁卫生"
+    FACILITY = "设施损坏"
+    ODOR = "异味扰民"
+    CONSUMABLE = "耗材缺失"
+    SAFETY = "安全隐患"
+    ATTITUDE = "服务态度"
+    OTHER = "其他"
+
+
+class ComplaintStatus(StrEnum):
+    PENDING = "待受理"
+    PROCESSING = "处理中"
+    PENDING_VISIT = "待回访"
+    DONE = "已办结"
+    CLOSED = "已关闭"
+
+
+class ComplaintVisitResult(StrEnum):
+    SATISFIED = "联系上-满意"
+    UNSATISFIED = "联系上-不满意"
+    UNREACHABLE = "未联系上"
+
+
+# 投诉办理流转规则：当前状态 -> 允许流转到的状态
+# 注意：「待回访」只能通过登记回访记录推进（满意办结 / 不满意退回 / 未联系上再约）
+COMPLAINT_TRANSITIONS: dict[str, list[str]] = {
+    ComplaintStatus.PENDING: [ComplaintStatus.PROCESSING, ComplaintStatus.CLOSED],
+    ComplaintStatus.PROCESSING: [ComplaintStatus.PENDING_VISIT, ComplaintStatus.CLOSED],
+    ComplaintStatus.PENDING_VISIT: [],
+    ComplaintStatus.DONE: [ComplaintStatus.CLOSED],
+    ComplaintStatus.CLOSED: [],
+}
+
+# 状态流转对应的动作名称，用于生成办理流水
+COMPLAINT_TRANSITION_ACTIONS: dict[tuple[str, str], str] = {
+    (ComplaintStatus.PENDING, ComplaintStatus.PROCESSING): "受理分派",
+    (ComplaintStatus.PENDING, ComplaintStatus.CLOSED): "作废关闭",
+    (ComplaintStatus.PROCESSING, ComplaintStatus.PENDING_VISIT): "办结待回访",
+    (ComplaintStatus.PROCESSING, ComplaintStatus.CLOSED): "终止关闭",
+    (ComplaintStatus.PENDING_VISIT, ComplaintStatus.DONE): "回访办结",
+    (ComplaintStatus.PENDING_VISIT, ComplaintStatus.PROCESSING): "回访退回",
+    (ComplaintStatus.DONE, ComplaintStatus.CLOSED): "归档关闭",
+}
+
+# 按反映内容判定分类的关键词表，命中越多分类越靠前
+COMPLAINT_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    ComplaintCategory.CLEANING.value: [
+        "脏", "污渍", "地面", "垃圾", "满溢", "打扫", "保洁", "卫生", "蚊蝇", "痰迹",
+    ],
+    ComplaintCategory.FACILITY.value: [
+        "损坏", "坏了", "漏水", "堵塞", "冲水", "水龙头", "门锁", "灯", "故障", "维修", "扶手",
+    ],
+    ComplaintCategory.ODOR.value: ["臭", "异味", "刺鼻", "通风", "臭味"],
+    ComplaintCategory.CONSUMABLE.value: ["厕纸", "纸巾", "洗手液", "耗材", "烘手", "缺纸"],
+    ComplaintCategory.SAFETY.value: ["滑", "摔倒", "安全", "漏电", "隐患", "积水", "玻璃"],
+    ComplaintCategory.ATTITUDE.value: ["态度", "辱骂", "推诿", "拒绝", "服务"],
+}
+
+# 仍未闭环的投诉状态，用于统计待办诉求
+OPEN_COMPLAINT_STATUSES: list[str] = [
+    ComplaintStatus.PENDING,
+    ComplaintStatus.PROCESSING,
+    ComplaintStatus.PENDING_VISIT,
+]

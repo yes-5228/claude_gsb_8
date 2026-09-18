@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import (
     INSPECTION_CHECK_ITEMS,
+    ComplaintSource,
+    ComplaintStatus,
+    ComplaintVisitResult,
     IssueCategory,
     IssueSeverity,
     IssueStatus,
@@ -16,10 +19,11 @@ from app.core.constants import (
     Shift,
 )
 from app.models import Restroom
+from app.schemas.complaint import ComplaintCreate, ComplaintStatusUpdate, ComplaintVisitCreate
 from app.schemas.inspection import InspectionCreate, InspectionItem
 from app.schemas.issue import IssueCreate, IssueStatusUpdate
 from app.schemas.restroom import RestroomCreate
-from app.services import inspection_service, issue_service, restroom_service
+from app.services import complaint_service, inspection_service, issue_service, restroom_service
 
 RANDOM_SEED = 20240913
 
@@ -38,6 +42,19 @@ RESTROOM_SPECS = [
 
 INSPECTORS = ["张伟", "刘洋", "胡明月", "邓晨曦", "马晓峰", "杨柳"]
 MANAGERS = ["王秀兰", "李国强", "陈志远", "刘桂芳", "周晓燕", "吴建华", "郑淑珍", "孙鹏"]
+
+# 群众反映演示数据：(公厕序号, 来源, 反映内容, 反映人, 登记天数, 推进阶段)
+COMPLAINT_SPECS = [
+    (0, ComplaintSource.HOTLINE, "群众反映厕内地面脏污，垃圾篓满溢未及时清理", "张先生", 9, "closed"),
+    (1, ComplaintSource.TRANSFER_12345, "感应冲水设备故障，水龙头损坏漏水，望尽快维修", "李女士", 7, "done"),
+    (3, ComplaintSource.NETWORK, "公厕内臭味刺鼻，希望加强通风除臭", "王大爷", 5, "unreachable"),
+    (4, ComplaintSource.ON_SITE, "厕纸用完长时间无人补充，洗手液也空了", "刘女士", 4, "visit"),
+    (6, ComplaintSource.HOTLINE, "洗手台地面积水湿滑，老人差点摔倒，存在安全隐患", "陈先生", 3, "returned"),
+    (5, ComplaintSource.TRANSFER_12345, "保洁员服务态度恶劣，反映问题被推诿", "热心市民", 2, "processing"),
+    (7, ComplaintSource.HOTLINE, "晚间厕内照明灯损坏，夜间如厕不便", "周先生", 1, "processing"),
+    (2, ComplaintSource.NETWORK, "周末人流大，厕内卫生差、地面污渍明显", "吴女士", 0, "pending"),
+]
+COMPLAINT_HANDLERS = ["街办保洁队", "设施维修组", "片区管理员"]
 
 ISSUE_TEMPLATES = {
     IssueCategory.CLEANING: [
@@ -190,6 +207,7 @@ def seed_database(db: Session, *, reset: bool = False) -> int:
         created += 1
         _advance_issue(db, issue.id, age_days, rng)
 
+    _seed_complaints(db, restrooms, rng, now)
     return created
 
 
@@ -226,3 +244,91 @@ def _advance_issue(db: Session, issue_id: int, age_days: int, rng: random.Random
             )
         except Exception:  # noqa: BLE001  演示数据允许跳过不合法的流转
             break
+
+
+def _seed_complaints(db: Session, restrooms: list, rng: random.Random, now: datetime) -> None:
+    """生成覆盖各办理阶段的群众反映演示数据。"""
+    for index, source, content, contact, days_ago, stage in COMPLAINT_SPECS:
+        room = restrooms[index % len(restrooms)]
+        complaint = complaint_service.create_complaint(
+            db,
+            ComplaintCreate(
+                restroom_id=room.id,
+                source=source,
+                content=content,
+                contact_name=contact,
+                contact_phone=f"13{rng.randint(100000000, 999999999)}",
+                received_at=now - timedelta(days=days_ago, hours=rng.randint(1, 8)),
+                initial_remark=f"{source}登记，已告知反映人办理时限",
+            ),
+        )
+        if stage == "pending":
+            continue
+
+        handler = rng.choice(COMPLAINT_HANDLERS)
+        complaint_service.change_status(
+            db,
+            complaint.id,
+            ComplaintStatusUpdate(
+                to_status=ComplaintStatus.PROCESSING,
+                operator=handler,
+                remark=f"已分派{handler}现场核实处理",
+            ),
+        )
+        if stage == "processing":
+            continue
+
+        complaint_service.change_status(
+            db,
+            complaint.id,
+            ComplaintStatusUpdate(
+                to_status=ComplaintStatus.PENDING_VISIT,
+                operator=handler,
+                result="已现场处理完毕并复查合格，等待回访反映人",
+                remark="处理完成，转入回访",
+            ),
+        )
+        if stage == "visit":
+            continue
+
+        if stage == "unreachable":
+            complaint_service.add_visit(
+                db,
+                complaint.id,
+                ComplaintVisitCreate(
+                    visitor="值班员小赵",
+                    result=ComplaintVisitResult.UNREACHABLE,
+                    note="两次拨打电话均无人接听",
+                    next_visit_at=now + timedelta(days=1),
+                ),
+            )
+        elif stage == "returned":
+            complaint_service.add_visit(
+                db,
+                complaint.id,
+                ComplaintVisitCreate(
+                    visitor="值班员小赵",
+                    result=ComplaintVisitResult.UNSATISFIED,
+                    note="反映人表示现场仍有积水，要求再次处理",
+                ),
+            )
+        else:  # done / closed
+            complaint_service.add_visit(
+                db,
+                complaint.id,
+                ComplaintVisitCreate(
+                    visitor="值班员小赵",
+                    result=ComplaintVisitResult.SATISFIED,
+                    note="电话回访，反映人对处理结果表示满意",
+                ),
+            )
+            if stage == "closed":
+                complaint_service.change_status(
+                    db,
+                    complaint.id,
+                    ComplaintStatusUpdate(
+                        to_status=ComplaintStatus.CLOSED,
+                        operator="值班长",
+                        remark="回访满意，归档关闭",
+                    ),
+                )

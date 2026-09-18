@@ -69,7 +69,7 @@ class RestroomOut(RestroomBase):
 
 
 class RestroomDetail(RestroomOut):
-    """台账详情，附带巡查与问题的汇总信息。"""
+    """台账详情，附带巡查、问题与群众反映的汇总信息。"""
 
     inspection_count: int = 0
     latest_inspection_time: datetime | None = None
@@ -77,3 +77,5 @@ class RestroomDetail(RestroomOut):
     avg_score: float | None = None
     open_issue_count: int = 0
     total_issue_count: int = 0
+    complaint_count: int = 0
+    open_complaint_count: int = 0

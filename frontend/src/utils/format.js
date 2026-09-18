@@ -43,6 +43,13 @@ export const STATUS_TONES = {
   已关闭: 'tag-neutral',
   正常: 'tag-success',
   发现问题: 'tag-danger',
+  待受理: 'tag-danger',
+  处理中: 'tag-warning',
+  待回访: 'tag-info',
+  已办结: 'tag-success',
+  '联系上-满意': 'tag-success',
+  '联系上-不满意': 'tag-warning',
+  未联系上: 'tag-neutral',
 };
 
 export const SEVERITY_TONES = {

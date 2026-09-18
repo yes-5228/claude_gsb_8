@@ -223,3 +223,173 @@ def test_dashboard_stats(client, restroom):
     }
     assert payload["top_restrooms"]
     assert "rectification_rate" in overview
+
+
+def test_complaint_classify(client):
+    payload = client.post(
+        "/api/v1/complaints/classify", json={"content": "水龙头损坏漏水，冲水设备故障"}
+    ).json()
+    assert payload["category"] == "设施损坏"
+    assert "漏水" in payload["matched"]
+
+    odor = client.post("/api/v1/complaints/classify", json={"content": "厕内臭味刺鼻"}).json()
+    assert odor["category"] == "异味扰民"
+
+    unknown = client.post("/api/v1/complaints/classify", json={"content": "随便问问"}).json()
+    assert unknown["category"] == "其他"
+
+
+def test_complaint_lifecycle(client, restroom):
+    # 登记受理：不填分类时按内容自动判定
+    complaint = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "12345转办",
+            "content": "群众反映厕纸长时间未补充，洗手液也空了",
+            "contact_name": "张先生",
+            "contact_phone": "13800000000",
+        },
+    )
+    assert complaint.status_code == 201, complaint.text
+    complaint = complaint.json()
+    assert complaint["status"] == "待受理"
+    assert complaint["category"] == "耗材缺失"
+    assert complaint["code"].startswith("FS-")
+    assert complaint["records"][0]["action"] == "登记受理"
+
+    # 越级流转被拒绝：待受理 -> 待回访
+    invalid = client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "待回访", "operator": "值班长", "result": "已处理"},
+    )
+    assert invalid.status_code == 400
+
+    # 受理分派：处理人随流转登记
+    accepted = client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "处理中", "operator": "街办保洁队", "remark": "已分派核实"},
+    ).json()
+    assert accepted["status"] == "处理中"
+    assert accepted["assignee"] == "街办保洁队"
+
+    # 办结必须填写处理结果
+    missing_result = client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "待回访", "operator": "街办保洁队"},
+    )
+    assert missing_result.status_code == 400
+    assert "处理结果" in missing_result.json()["detail"]
+
+    handled = client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={
+            "to_status": "待回访",
+            "operator": "街办保洁队",
+            "result": "已补充厕纸与洗手液，现场复查合格",
+        },
+    ).json()
+    assert handled["status"] == "待回访"
+    assert handled["handled_at"] is not None
+
+    # 未联系上必须约定再次回访时间
+    no_schedule = client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={"visitor": "值班员", "result": "未联系上"},
+    )
+    assert no_schedule.status_code == 400
+
+    retry_at = (datetime.now() + timedelta(days=1)).isoformat()
+    unreachable = client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={
+            "visitor": "值班员",
+            "result": "未联系上",
+            "note": "电话无人接听",
+            "next_visit_at": retry_at,
+        },
+    ).json()
+    assert unreachable["status"] == "待回访"
+    assert unreachable["next_visit_at"] is not None
+    assert unreachable["visits"][-1]["result"] == "未联系上"
+    assert unreachable["records"][-1]["action"] == "回访未联系上"
+
+    # 再次回访联系上但不满意 -> 退回处理中
+    returned = client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={"visitor": "值班员", "result": "联系上-不满意", "note": "反映人称耗材又断了"},
+    ).json()
+    assert returned["status"] == "处理中"
+
+    # 重新办结后回访满意 -> 已办结 -> 归档关闭
+    client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "待回访", "operator": "街办保洁队", "result": "已建立每日补充机制"},
+    )
+    done = client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={"visitor": "值班员", "result": "联系上-满意", "note": "反映人表示满意"},
+    ).json()
+    assert done["status"] == "已办结"
+    assert done["next_visit_at"] is None
+
+    closed = client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "已关闭", "operator": "值班长", "remark": "归档"},
+    ).json()
+    assert closed["status"] == "已关闭"
+    assert closed["closed_at"] is not None
+
+    # 已关闭后不能再登记回访
+    rejected_visit = client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={"visitor": "值班员", "result": "联系上-满意"},
+    )
+    assert rejected_visit.status_code == 400
+
+    # 列表筛选：来源 / 关键字 / 状态
+    by_source = client.get("/api/v1/complaints", params={"source": "12345转办"}).json()
+    assert by_source["meta"]["total"] >= 1
+    by_keyword = client.get("/api/v1/complaints", params={"keyword": "13800000000"}).json()
+    assert by_keyword["meta"]["total"] == 1
+    open_only = client.get("/api/v1/complaints", params={"open_only": "true"}).json()
+    assert all(item["status"] != "已关闭" for item in open_only["items"])
+
+    # 存在群众反映记录的公厕不允许直接删除
+    blocked = client.delete(f"/api/v1/restrooms/{restroom['id']}")
+    assert blocked.status_code == 409
+    assert "群众反映" in blocked.json()["detail"]
+
+
+def test_complaint_visit_due_filter(client, restroom):
+    complaint = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "热线电话",
+            "content": "厕内异味明显，希望加强通风",
+            "contact_name": "李女士",
+        },
+    ).json()
+    client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "处理中", "operator": "片区管理员"},
+    )
+    client.post(
+        f"/api/v1/complaints/{complaint['id']}/transitions",
+        json={"to_status": "待回访", "operator": "片区管理员", "result": "已加强通风除臭"},
+    )
+    due = client.get("/api/v1/complaints", params={"visit_due": "true"}).json()
+    assert any(item["id"] == complaint["id"] for item in due["items"])
+
+    # 约了未来再次回访时间的，不出现在“当前需回访”列表
+    client.post(
+        f"/api/v1/complaints/{complaint['id']}/visits",
+        json={
+            "visitor": "值班员",
+            "result": "未联系上",
+            "next_visit_at": (datetime.now() + timedelta(days=2)).isoformat(),
+        },
+    )
+    due_after = client.get("/api/v1/complaints", params={"visit_due": "true"}).json()
+    assert all(item["id"] != complaint["id"] for item in due_after["items"])

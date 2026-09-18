@@ -7,9 +7,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
+    COMPLAINT_TRANSITIONS,
     INSPECTION_CHECK_ITEMS,
     INSPECTION_ITEM_MAX_SCORE,
     ISSUE_TRANSITIONS,
+    ComplaintCategory,
+    ComplaintSource,
+    ComplaintStatus,
+    ComplaintVisitResult,
     IssueCategory,
     IssueSeverity,
     IssueStatus,
@@ -40,6 +45,11 @@ class Dictionaries(BaseModel):
     inspection_check_items: list[str]
     inspection_item_max_score: int
     issue_transitions: dict[str, list[str]]
+    complaint_source: list[str]
+    complaint_category: list[str]
+    complaint_status: list[str]
+    complaint_visit_result: list[str]
+    complaint_transitions: dict[str, list[str]]
 
 
 @router.get("/dictionaries", response_model=Dictionaries, summary="枚举字典")
@@ -54,6 +64,11 @@ def get_dictionaries() -> Dictionaries:
         inspection_check_items=list(INSPECTION_CHECK_ITEMS),
         inspection_item_max_score=INSPECTION_ITEM_MAX_SCORE,
         issue_transitions={key: list(value) for key, value in ISSUE_TRANSITIONS.items()},
+        complaint_source=[item.value for item in ComplaintSource],
+        complaint_category=[item.value for item in ComplaintCategory],
+        complaint_status=[item.value for item in ComplaintStatus],
+        complaint_visit_result=[item.value for item in ComplaintVisitResult],
+        complaint_transitions={key: list(value) for key, value in COMPLAINT_TRANSITIONS.items()},
     )
 
 

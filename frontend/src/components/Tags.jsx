@@ -1,4 +1,4 @@
-import { isOverdue, scoreTone, severityTone, statusTone } from '../utils/format.js';
+import { isFollowDue, isOverdue, scoreTone, severityTone, statusTone } from '../utils/format.js';
 
 export function StatusTag({ status }) {
   return <span className={`tag ${statusTone(status)}`}>{status}</span>;
@@ -15,6 +15,18 @@ export function ScorePill({ score }) {
 export function OverdueTag({ deadline, status }) {
   if (!isOverdue(deadline, status)) return null;
   return <span className="tag tag-danger">已超期</span>;
+}
+
+/** 到了约定的再次回访时间仍未回访的提醒标签。 */
+export function FollowDueTag({ nextFollowTime, status }) {
+  if (!isFollowDue(nextFollowTime, status)) return null;
+  return <span className="tag tag-danger">待再次回访</span>;
+}
+
+export function FollowUpResultTag({ result }) {
+  return (
+    <span className={`tag ${result === '已联系上' ? 'tag-success' : 'tag-danger'}`}>{result}</span>
+  );
 }
 
 export function GradeTag({ grade }) {

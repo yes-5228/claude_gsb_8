@@ -1,6 +1,13 @@
 """Pydantic 数据模型。"""
 
 from app.schemas.common import Page, PageMeta, MessageOut
+from app.schemas.complaint import (
+    ComplaintCreate,
+    ComplaintFlowRecordOut,
+    ComplaintOut,
+    ComplaintUpdate,
+    FollowUpRecordOut,
+)
 from app.schemas.inspection import (
     InspectionBrief,
     InspectionCreate,
@@ -43,5 +50,10 @@ __all__ = [
     "IssueUpdate",
     "IssueStatusUpdate",
     "IssueOut",
+    "ComplaintCreate",
+    "ComplaintUpdate",
+    "ComplaintOut",
+    "ComplaintFlowRecordOut",
+    "FollowUpRecordOut",
     "DashboardStats",
 ]

@@ -97,3 +97,67 @@ OPEN_ISSUE_STATUSES: list[str] = [
 
 # 单检查项低于该分数视为不合格项
 INSPECTION_ITEM_PROBLEM_THRESHOLD = 6
+
+
+class ComplaintSource(StrEnum):
+    """诉求来源：群众反映或热线等渠道转办。"""
+
+    PUBLIC = "群众反映"
+    HOTLINE = "热线转办"
+    ONLINE = "网络留言"
+    ONSITE = "现场反映"
+    OTHER = "其他渠道"
+
+
+class ComplaintCategory(StrEnum):
+    CLEANING = "保洁卫生"
+    FACILITY = "设施损坏"
+    ODOR = "异味扰民"
+    CONSUMABLE = "耗材缺失"
+    ATTITUDE = "服务态度"
+    OTHER = "其他"
+
+
+class ComplaintStatus(StrEnum):
+    PENDING = "待分派"
+    PROCESSING = "处理中"
+    FOLLOW_UP = "待回访"
+    RESOLVED = "已办结"
+    CLOSED = "已关闭"
+
+
+class FollowUpResult(StrEnum):
+    REACHED = "已联系上"
+    UNREACHABLE = "未联系上"
+
+
+class FollowUpSatisfaction(StrEnum):
+    SATISFIED = "满意"
+    FAIR = "基本满意"
+    DISSATISFIED = "不满意"
+
+
+# 诉求办理流转规则：当前状态 -> 允许流转到的状态
+COMPLAINT_TRANSITIONS: dict[str, list[str]] = {
+    ComplaintStatus.PENDING: [ComplaintStatus.PROCESSING, ComplaintStatus.CLOSED],
+    ComplaintStatus.PROCESSING: [ComplaintStatus.FOLLOW_UP, ComplaintStatus.CLOSED],
+    ComplaintStatus.FOLLOW_UP: [ComplaintStatus.RESOLVED],
+    ComplaintStatus.RESOLVED: [],
+    ComplaintStatus.CLOSED: [],
+}
+
+# 按反映内容判定分类的关键词表：靠前的分类优先匹配
+COMPLAINT_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    (ComplaintCategory.ODOR, ("异味", "臭味", "难闻", "熏", "气味")),
+    (ComplaintCategory.FACILITY, ("水龙头", "冲水", "漏水", "损坏", "坏了", "故障", "门锁", "照明", "灯", "扶手", "无障碍")),
+    (ComplaintCategory.CONSUMABLE, ("厕纸", "纸巾", "没有纸", "洗手液", "耗材", "皂液")),
+    (ComplaintCategory.ATTITUDE, ("态度", "服务", "保洁员", "工作人员", "争吵")),
+    (ComplaintCategory.CLEANING, ("脏", "污", "垃圾", "打扫", "清洁", "卫生", "积水", "蚊蝇", "痰迹")),
+]
+
+# 仍未办结、需要跟进的诉求状态
+OPEN_COMPLAINT_STATUSES: list[str] = [
+    ComplaintStatus.PENDING,
+    ComplaintStatus.PROCESSING,
+    ComplaintStatus.FOLLOW_UP,
+]

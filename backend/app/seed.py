@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import (
     INSPECTION_CHECK_ITEMS,
+    ComplaintSource,
+    FollowUpResult,
+    FollowUpSatisfaction,
     IssueCategory,
     IssueSeverity,
     IssueStatus,
@@ -16,10 +19,17 @@ from app.core.constants import (
     Shift,
 )
 from app.models import Restroom
+from app.schemas.complaint import (
+    ComplaintAssign,
+    ComplaintClose,
+    ComplaintCreate,
+    ComplaintFinish,
+    FollowUpCreate,
+)
 from app.schemas.inspection import InspectionCreate, InspectionItem
 from app.schemas.issue import IssueCreate, IssueStatusUpdate
 from app.schemas.restroom import RestroomCreate
-from app.services import inspection_service, issue_service, restroom_service
+from app.services import complaint_service, inspection_service, issue_service, restroom_service
 
 RANDOM_SEED = 20240913
 
@@ -78,6 +88,20 @@ CATEGORY_BY_ITEM = {
     "工具与标识摆放": IssueCategory.OTHER,
     "墙面门窗卫生": IssueCategory.CLEANING,
 }
+
+# (来源, 反映内容, 反映人, 办理阶段)；阶段驱动 _advance_complaint 推进流程
+COMPLAINT_SPECS = [
+    (ComplaintSource.HOTLINE, "市民来电反映公厕内异味明显，早晚高峰尤其严重，希望加强通风除臭", "王先生", "resolved"),
+    (ComplaintSource.PUBLIC, "女厕第三个蹲位门锁损坏无法反锁，使用时很不安全", "李女士", "follow_overdue"),
+    (ComplaintSource.ONLINE, "网友留言：洗手台两个水龙头不出水，请尽快维修", "网友「江边人」", "processing"),
+    (ComplaintSource.HOTLINE, "12345 转办：群众反映地面湿滑且未放置警示牌，有老人险些滑倒", "张先生", "follow_up"),
+    (ComplaintSource.ONSITE, "现场群众反映厕纸和洗手液都没有了，要求及时补充", "刘阿姨", "pending"),
+    (ComplaintSource.PUBLIC, "反映保洁员清扫时态度生硬，与如厕群众发生争执", "赵先生", "resolved"),
+    (ComplaintSource.HOTLINE, "市民来电：无障碍间扶手松动，轮椅使用者很不方便", "孙女士", "processing"),
+    (ComplaintSource.ONLINE, "留言建议夏季延长开放时间至 23 点", "网友「夜跑族」", "closed"),
+    (ComplaintSource.PUBLIC, "反映垃圾篓满溢、地面有痰迹，整体卫生状况差", "周女士", "follow_overdue"),
+    (ComplaintSource.HOTLINE, "市民反映晚间照明灯不亮，存在安全隐患", "吴先生", "pending"),
+]
 
 
 def _build_items(rng: random.Random, quality: float) -> list[InspectionItem]:
@@ -190,6 +214,23 @@ def seed_database(db: Session, *, reset: bool = False) -> int:
         created += 1
         _advance_issue(db, issue.id, age_days, rng)
 
+    # 群众诉求演示数据：覆盖待分派、处理中、待回访、再次回访、已办结、已关闭各阶段
+    for index, (source, content, reporter, stage) in enumerate(COMPLAINT_SPECS):
+        room = restrooms[index % len(restrooms)]
+        complaint = complaint_service.create_complaint(
+            db,
+            ComplaintCreate(
+                restroom_id=room.id,
+                source=source,
+                content=content,
+                reporter_name=reporter,
+                reporter_phone=f"13{rng.randint(100000000, 999999999)}",
+                receiver="坐席员小陈",
+                received_at=now - timedelta(days=len(COMPLAINT_SPECS) - index, hours=index * 2),
+            ),
+        )
+        _advance_complaint(db, complaint.id, stage, rng)
+
     return created
 
 
@@ -226,3 +267,60 @@ def _advance_issue(db: Session, issue_id: int, age_days: int, rng: random.Random
             )
         except Exception:  # noqa: BLE001  演示数据允许跳过不合法的流转
             break
+
+
+def _advance_complaint(db: Session, complaint_id: int, stage: str, rng: random.Random) -> None:
+    """按指定阶段推进诉求办理流程，让列表呈现各种办理状态。"""
+    if stage == "pending":
+        return
+    if stage == "closed":
+        complaint_service.close_complaint(
+            db,
+            complaint_id,
+            ComplaintClose(operator="值班长", remark="与既有诉求重复，合并办理后关闭"),
+        )
+        return
+
+    complaint_service.assign_handler(
+        db,
+        complaint_id,
+        ComplaintAssign(
+            handler=rng.choice(MANAGERS),
+            operator="值班长",
+            remark="按属地分派至公厕保洁责任人",
+        ),
+    )
+    if stage == "processing":
+        return
+
+    complaint_service.finish_complaint(
+        db,
+        complaint_id,
+        ComplaintFinish(result="已现场处理完毕，设施与环境恢复正常", operator="保洁责任人"),
+    )
+    if stage == "follow_up":
+        return
+    if stage == "follow_overdue":
+        # 未联系上且约定的再次回访时间已过，用于演示列表的回访提醒
+        complaint_service.add_follow_up(
+            db,
+            complaint_id,
+            FollowUpCreate(
+                result=FollowUpResult.UNREACHABLE,
+                next_follow_time=datetime.now() - timedelta(days=1),
+                operator="回访员小周",
+                remark="两次拨打电话均无人接听，改日再访",
+            ),
+        )
+        return
+    if stage == "resolved":
+        complaint_service.add_follow_up(
+            db,
+            complaint_id,
+            FollowUpCreate(
+                result=FollowUpResult.REACHED,
+                satisfaction=FollowUpSatisfaction.SATISFIED,
+                operator="回访员小周",
+                remark="反映人对处理结果表示满意",
+            ),
+        )

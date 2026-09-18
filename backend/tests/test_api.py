@@ -223,3 +223,204 @@ def test_dashboard_stats(client, restroom):
     }
     assert payload["top_restrooms"]
     assert "rectification_rate" in overview
+
+
+def test_complaint_lifecycle(client, restroom):
+    # 受理登记：分类留空，按内容自动判定
+    created = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "热线转办",
+            "content": "市民来电反映水龙头损坏漏水，请尽快维修",
+            "reporter_name": "王先生",
+            "reporter_phone": "13800000000",
+            "receiver": "坐席员小陈",
+        },
+    )
+    assert created.status_code == 201, created.text
+    complaint = created.json()
+    assert complaint["code"].startswith("SQ-")
+    assert complaint["category"] == "设施损坏"
+    assert complaint["status"] == "待分派"
+    assert complaint["records"][0]["action"] == "受理登记"
+
+    # 未分派前不能登记处理结果
+    early = client.post(
+        f"/api/v1/complaints/{complaint['id']}/finish",
+        json={"result": "已维修", "operator": "李维修"},
+    )
+    assert early.status_code == 400
+
+    # 分派处理人
+    assigned = client.post(
+        f"/api/v1/complaints/{complaint['id']}/assign",
+        json={"handler": "李维修", "operator": "值班长"},
+    ).json()
+    assert assigned["status"] == "处理中"
+    assert assigned["handler"] == "李维修"
+    assert assigned["records"][-1]["action"] == "分派处理人"
+
+    # 处理完成，登记结果
+    finished = client.post(
+        f"/api/v1/complaints/{complaint['id']}/finish",
+        json={"result": "已更换阀芯，供水恢复正常", "operator": "李维修"},
+    ).json()
+    assert finished["status"] == "待回访"
+    assert finished["result"] == "已更换阀芯，供水恢复正常"
+
+    # 未联系上时必须约定下次回访时间
+    missing = client.post(
+        f"/api/v1/complaints/{complaint['id']}/follow-ups",
+        json={"result": "未联系上", "operator": "回访员小周"},
+    )
+    assert missing.status_code == 400
+
+    # 回访未联系上：保持待回访并安排再次回访
+    next_time = (datetime.now() + timedelta(days=1)).isoformat()
+    unreachable = client.post(
+        f"/api/v1/complaints/{complaint['id']}/follow-ups",
+        json={
+            "result": "未联系上",
+            "operator": "回访员小周",
+            "next_follow_time": next_time,
+            "remark": "电话无人接听",
+        },
+    ).json()
+    assert unreachable["status"] == "待回访"
+    assert unreachable["next_follow_time"] is not None
+    assert unreachable["follow_ups"][0]["result"] == "未联系上"
+    assert unreachable["records"][-1]["action"] == "回访未联系上"
+
+    # 再次回访联系上：办结并清空下次回访时间
+    reached = client.post(
+        f"/api/v1/complaints/{complaint['id']}/follow-ups",
+        json={"result": "已联系上", "satisfaction": "满意", "operator": "回访员小周"},
+    ).json()
+    assert reached["status"] == "已办结"
+    assert reached["next_follow_time"] is None
+    assert len(reached["follow_ups"]) == 2
+    assert reached["follow_ups"][1]["satisfaction"] == "满意"
+
+    # 办结后不能再回访
+    late = client.post(
+        f"/api/v1/complaints/{complaint['id']}/follow-ups",
+        json={"result": "已联系上", "operator": "回访员小周"},
+    )
+    assert late.status_code == 400
+
+
+def test_complaint_classification_filters_and_close(client, restroom):
+    # 分类预判接口
+    odor = client.post("/api/v1/complaints/classify", json={"content": "里面异味很大，熏人"})
+    assert odor.json()["category"] == "异味扰民"
+    plain = client.post("/api/v1/complaints/classify", json={"content": "建议延长开放时间"})
+    assert plain.json()["category"] == "其他"
+
+    hotline = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "热线转办",
+            "content": "市民反映厕纸没有了",
+            "reporter_phone": "13911111111",
+        },
+    ).json()
+    assert hotline["category"] == "耗材缺失"
+    public = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "群众反映",
+            "content": "建议增加指示牌",
+            "reporter_phone": "13922222222",
+        },
+    ).json()
+
+    # 按来源 / 状态筛选
+    by_source = client.get("/api/v1/complaints", params={"source": "热线转办"}).json()
+    assert by_source["meta"]["total"] >= 1
+    assert all(item["source"] == "热线转办" for item in by_source["items"])
+    by_keyword = client.get("/api/v1/complaints", params={"keyword": "13922222222"}).json()
+    assert by_keyword["meta"]["total"] == 1
+
+    # 待分派可直接作废关闭
+    closed = client.post(
+        f"/api/v1/complaints/{public['id']}/close",
+        json={"operator": "值班长", "remark": "重复反映，合并办理"},
+    ).json()
+    assert closed["status"] == "已关闭"
+    assert closed["closed_at"] is not None
+
+    # 关闭后不允许再分派
+    reassign = client.post(
+        f"/api/v1/complaints/{public['id']}/assign",
+        json={"handler": "张三", "operator": "值班长"},
+    )
+    assert reassign.status_code == 400
+
+    # 处理中的诉求可以改派
+    client.post(
+        f"/api/v1/complaints/{hotline['id']}/assign",
+        json={"handler": "刘桂芳", "operator": "值班长"},
+    )
+    changed = client.post(
+        f"/api/v1/complaints/{hotline['id']}/assign",
+        json={"handler": "孙鹏", "operator": "值班长", "remark": "调整责任区域"},
+    ).json()
+    assert changed["handler"] == "孙鹏"
+    assert changed["records"][-1]["action"] == "改派处理人"
+
+    # 回访提醒：finish 后登记一次未联系上且下次回访时间已过
+    client.post(
+        f"/api/v1/complaints/{hotline['id']}/finish",
+        json={"result": "已补充厕纸", "operator": "孙鹏"},
+    )
+    client.post(
+        f"/api/v1/complaints/{hotline['id']}/follow-ups",
+        json={
+            "result": "未联系上",
+            "operator": "回访员小周",
+            "next_follow_time": (datetime.now() - timedelta(hours=2)).isoformat(),
+        },
+    )
+    due = client.get("/api/v1/complaints", params={"follow_due": "true"}).json()
+    assert any(item["id"] == hotline["id"] for item in due["items"])
+
+    # 字典包含诉求相关枚举
+    dictionaries = client.get("/api/v1/meta/dictionaries").json()
+    assert "待回访" in dictionaries["complaint_status"]
+    assert "未联系上" in dictionaries["follow_up_result"]
+
+
+def test_complaint_update_reclassifies(client, restroom):
+    complaint = client.post(
+        "/api/v1/complaints",
+        json={
+            "restroom_id": restroom["id"],
+            "source": "群众反映",
+            "content": "公厕内异味很大，希望加强通风",
+            "reporter_phone": "13700000000",
+        },
+    ).json()
+    assert complaint["category"] == "异味扰民"
+
+    # 修改内容且分类置空：按新内容重新判定
+    updated = client.patch(
+        f"/api/v1/complaints/{complaint['id']}",
+        json={"content": "水龙头损坏一直漏水", "category": None},
+    ).json()
+    assert updated["category"] == "设施损坏"
+
+    # 显式指定分类时以指定为准
+    manual = client.patch(
+        f"/api/v1/complaints/{complaint['id']}", json={"category": "其他"}
+    ).json()
+    assert manual["category"] == "其他"
+
+    # 办结/关闭后不允许再补正
+    client.post(f"/api/v1/complaints/{complaint['id']}/close", json={"operator": "值班长"})
+    blocked = client.patch(
+        f"/api/v1/complaints/{complaint['id']}", json={"content": "试图修改"}
+    )
+    assert blocked.status_code == 400

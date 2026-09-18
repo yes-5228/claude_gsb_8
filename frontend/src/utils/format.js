@@ -43,6 +43,10 @@ export const STATUS_TONES = {
   已关闭: 'tag-neutral',
   正常: 'tag-success',
   发现问题: 'tag-danger',
+  待分派: 'tag-danger',
+  处理中: 'tag-warning',
+  待回访: 'tag-info',
+  已办结: 'tag-success',
 };
 
 export const SEVERITY_TONES = {
@@ -70,4 +74,10 @@ export function isOverdue(deadline, status) {
   if (!deadline) return false;
   if (['已完成', '已关闭'].includes(status)) return false;
   return new Date(deadline).getTime() < Date.now();
+}
+
+/** 待回访且约定的下次回访时间已到，提醒安排再次回访。 */
+export function isFollowDue(nextFollowTime, status) {
+  if (status !== '待回访' || !nextFollowTime) return false;
+  return new Date(nextFollowTime).getTime() <= Date.now();
 }

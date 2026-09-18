@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { inspectionApi } from '../../api/inspections.js';
+import { complaintApi } from '../../api/complaints.js';
 import { issueApi } from '../../api/issues.js';
 import { restroomApi } from '../../api/restrooms.js';
 import DataTable from '../../components/DataTable.jsx';
 import DetailList from '../../components/DetailList.jsx';
 import PageHeader from '../../components/PageHeader.jsx';
 import Pagination from '../../components/Pagination.jsx';
-import { ScorePill, SeverityTag, StatusTag } from '../../components/Tags.jsx';
+import { FollowDueTag, ScorePill, SeverityTag, StatusTag } from '../../components/Tags.jsx';
 import { useAsync } from '../../hooks/useAsync.js';
 import { useListQuery } from '../../hooks/useListQuery.js';
 import { formatDateTime } from '../../utils/format.js';
@@ -18,6 +19,7 @@ const TABS = [
   { key: 'profile', label: '基础档案' },
   { key: 'inspections', label: '巡查记录' },
   { key: 'issues', label: '问题记录' },
+  { key: 'complaints', label: '诉求记录' },
 ];
 
 export default function RestroomDetailPage() {
@@ -36,6 +38,11 @@ export default function RestroomDetailPage() {
   );
   const issues = useListQuery(
     (params) => issueApi.list({ ...params, restroom_id: restroomId }),
+    {},
+    5,
+  );
+  const complaints = useListQuery(
+    (params) => complaintApi.list({ ...params, restroom_id: restroomId }),
     {},
     5,
   );
@@ -90,6 +97,14 @@ export default function RestroomDetailPage() {
                   <span className="unit">条</span>
                 </div>
                 <div className="foot">累计上报 {restroom.total_issue_count} 条</div>
+              </div>
+              <div className={`stat-card${restroom.open_complaint_count ? ' is-danger' : ''}`}>
+                <div className="label">待办结诉求</div>
+                <div className="value">
+                  {restroom.open_complaint_count}
+                  <span className="unit">条</span>
+                </div>
+                <div className="foot">累计受理 {restroom.total_complaint_count} 条</div>
               </div>
             </div>
 
@@ -186,6 +201,55 @@ export default function RestroomDetailPage() {
                   ]}
                 />
                 <Pagination meta={issues.meta} onPageChange={issues.setPage} />
+              </section>
+            ) : null}
+
+            {tab === 'complaints' ? (
+              <section className="card">
+                <div className="card-title">
+                  <h3>诉求记录</h3>
+                  <Link className="hint" to="/complaints">
+                    前往诉求受理模块 →
+                  </Link>
+                </div>
+                <DataTable
+                  loading={complaints.loading}
+                  error={complaints.error}
+                  rows={complaints.items}
+                  emptyText="该公厕暂无群众诉求"
+                  columns={[
+                    { key: 'code', title: '编号' },
+                    {
+                      key: 'content',
+                      title: '反映内容',
+                      wrap: true,
+                      render: (row) => (
+                        <Link to={`/complaints/${row.id}`}>
+                          {row.content.length > 28 ? `${row.content.slice(0, 28)}…` : row.content}
+                        </Link>
+                      ),
+                    },
+                    { key: 'source', title: '来源' },
+                    { key: 'category', title: '分类' },
+                    {
+                      key: 'status',
+                      title: '状态',
+                      render: (row) => (
+                        <span className="inline">
+                          <StatusTag status={row.status} />
+                          <FollowDueTag nextFollowTime={row.next_follow_time} status={row.status} />
+                        </span>
+                      ),
+                    },
+                    { key: 'handler', title: '处理人', render: (row) => row.handler || '未分派' },
+                    {
+                      key: 'received_at',
+                      title: '受理时间',
+                      render: (row) => formatDateTime(row.received_at),
+                    },
+                  ]}
+                />
+                <Pagination meta={complaints.meta} onPageChange={complaints.setPage} />
               </section>
             ) : null}
           </>
